@@ -48,14 +48,14 @@ grub_log_addmsg(int level, int facility, const char *file, const int line, const
  	 */
 	int msg_len = strlen(file) + line_strlen + strlen(fmt) + 3;
 	printf("Message is len: %i\n", msg_len);
-	//grub_log.log_msg[offset].msg = (char *)malloc(msg_len*sizeof(char));
-	char *msg = (char *)malloc(msg_len*sizeof(char));
-	sprintf(msg, "%s:%d: %s", file, line, fmt);
-	printf("%s\n\n", msg);
+	grub_log.log_msg[offset].msg = (char *)malloc(msg_len*sizeof(char));
+	//char *msg = (char *)malloc(msg_len*sizeof(char));
+	sprintf(grub_log.log_msg[offset].msg, "%s:%d: %s", file, line, fmt);
+	//printf("%s\n\n", msg);
 	grub_log.log_msg[offset].level = level;
 	grub_log.log_msg[offset].facility = facility;
 	grub_log.log_msg[offset].type = file; 
-	grub_log.log_msg[offset].msg = msg;
+	//grub_log.log_msg[offset].msg = msg;
 	grub_log.next_off = offset + 1;
 }
 
