@@ -6,6 +6,8 @@
 
 #define BL_SIZE_INIT 4096
 #define GRUB_PACKED __attribute__((packed))
+#define GRUB_ERR_OUT_OF_MEMORY 3
+#define GRUB_ERR_BUG 38
 
 struct bootloader_log_msg
 {
@@ -30,83 +32,49 @@ typedef struct bootloader_log bootloader_log_t;
 
 static bootloader_log_t *grub_log;
 
-void
+int
 grub_log_init (void)
 {
-  /* zalloc(size) should be the same as calloc(1, size) */
   grub_log = calloc (1, BL_SIZE_INIT);
   if (grub_log == NULL)
-  {
-    /* Handle NULL case */
-    return;
-  }
+    return GRUB_ERR_OUT_OF_MEMORY;
   grub_log->version = 1;
   grub_log->producer = 1; 
   grub_log->size = BL_SIZE_INIT;
   grub_log->next_off = sizeof (*grub_log); 
+ 
+  return 0;
 }
 
-uint32_t
-grub_log_write_msg (char msg[], const char *fmt, va_list args)
+int grub_log_realloc (void)
 {
-  bootloader_log_t *realloc_log;
-  uint32_t max_len;
-  uint32_t act_len;
-  uint32_t size;
+  bootloader_log_msg_t *realloc_log;
+  uint32_t size;  
 
-  do
-    {
-      max_len = grub_log->size - grub_log->next_off;
-      act_len = vsnprintf (msg, max_len, fmt, args);
-     
-      if (act_len >= max_len)
-      {
-        size = grub_log->size + BL_SIZE_INIT;
-        realloc_log = realloc (grub_log, size);
-       
-	 if (realloc_log == NULL)
-        {
-	  /* Handle NULL case */
-        }
-	else
-	{
-	  grub_log = realloc_log;
-	  memset (grub_log + grub_log->size, 0, BL_SIZE_INIT);
-	  grub_log->size = size;
-	}
-      }
-    }
-  while (act_len >= max_len);
+  size = grub_log->size + BL_SIZE_INIT;
+  realloc_log = realloc (grub_log, size);
 
-  return act_len;
+  if (realloc_log == NULL)
+    return GRUB_ERR_OUT_OF_MEMORY;
+  
+  grub_log = realloc_log;
+  memset (grub_log + grub_log->size, 0, BL_SIZE_INIT);
+  grub_log->size = size;
+
+  return 0;
 }
 
-uint32_t
-grub_log_vwrite_msg (char msg[], const char *fmt, ...)
-{
-  va_list args;
-  uint32_t act_len;
-
-  va_start (args, fmt);
-  act_len = grub_log_write_msg (msg, fmt, args);
-  va_end (args);
-
-  return act_len;
-}
-
-void
+int
 grub_log_add_msg (uint32_t level, const char *file, const int line, const char *fmt, ...)
 {
-  if (grub_log == NULL)
-  {
-    /* Handle NULL case */
-    return;
-  }
-
   bootloader_log_msg_t *msgs;
   va_list args;
   uint32_t act_len;
+  uint32_t max_len;
   uint32_t type_off;
+
+  if (grub_log == NULL)
+    return GRUB_ERR_BUG;
 
   msgs = (bootloader_log_msg_t *) ((uint8_t *) grub_log + grub_log->next_off);
   msgs->level = level;
@@ -114,20 +82,69 @@ grub_log_add_msg (uint32_t level, const char *file, const int line, const char *
   grub_log->next_off += sizeof (*msgs);
  
   printf ("Writing type\n");
-  act_len = grub_log_vwrite_msg (msgs->type, "%s", file);
+  do
+    {
+      max_len = grub_log->size - grub_log->next_off;
+      act_len = snprintf (msgs->type, max_len, "%s", file);
+     
+      if (act_len >= max_len)
+      {
+        if (grub_log_realloc () == GRUB_ERR_OUT_OF_MEMORY)
+	  return GRUB_ERR_OUT_OF_MEMORY;
+
+	/* Reset msgs pointer in case memory moves to a new location. */
+	msgs = (bootloader_log_msg_t *) ((uint8_t *) grub_log + grub_log->next_off - sizeof (*msgs));
+      }
+    }
+  while (act_len >= max_len);
+
   grub_log->next_off += act_len + 1;
   type_off = act_len + 1;
 
   printf ("Writing msg beginning\n");
-  act_len = grub_log_vwrite_msg (msgs->type + type_off, "%s:%d: ", file, line);
+  do
+    {
+      max_len = grub_log->size - grub_log->next_off;
+      act_len = snprintf (msgs->type + type_off, max_len, "%s:%d: ", file, line);
+     
+      if (act_len >= max_len)
+      {
+        if (grub_log_realloc () == GRUB_ERR_OUT_OF_MEMORY)
+	  return GRUB_ERR_OUT_OF_MEMORY;
+
+	/* Reset msgs pointer and type_off in case memory moves to a new location. */
+	msgs = (bootloader_log_msg_t *) ((uint8_t *) grub_log + grub_log->next_off - sizeof( *msgs));
+	type_off = 0;
+      }
+    }
+  while (act_len >= max_len);
+
   grub_log->next_off += act_len;
   type_off += act_len;
 
   printf("Writing variable format\n");
-  va_start (args, fmt);
-  act_len = grub_log_write_msg (msgs->type + type_off, fmt, args);
-  va_end (args);
-  grub_log->next_off += act_len + 1; 
+  do
+    {
+      max_len = grub_log->size - grub_log->next_off;
+      va_start(args, fmt);
+      act_len = vsnprintf (msgs->type + type_off, max_len, fmt, args);
+      va_end(args);     
+
+      if (act_len >= max_len)
+      {
+        if (grub_log_realloc () == GRUB_ERR_OUT_OF_MEMORY)
+	  return GRUB_ERR_OUT_OF_MEMORY;
+
+	/* Reset msgs pointer and type_off in case memory moves to a new location. */
+	msgs = (bootloader_log_msg_t *) ((uint8_t *) grub_log + grub_log->next_off - sizeof (*msgs));
+	type_off = 0;
+      }
+    }
+  while (act_len >= max_len);
+
+  grub_log->next_off += act_len + 1;
+
+  return 0;
 }
 
 int 
