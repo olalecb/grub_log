@@ -64,13 +64,52 @@ int grub_log_realloc (void)
   return 0;
 }
 
+uint32_t
+grub_log_write_msg (bootloader_log_msg_t **msgs, uint32_t *type_off, const char *fmt, va_list args)
+{
+  va_list args_copy;
+  uint32_t max_len;
+  uint32_t act_len;
+
+  do
+    {
+      va_copy (args_copy, args);
+      max_len = grub_log->size - grub_log->next_off;
+      act_len = vsnprintf ((*msgs)->type + *type_off, max_len, fmt, args_copy);
+
+      if (act_len >= max_len)
+      {
+	if (grub_log_realloc () == GRUB_ERR_OUT_OF_MEMORY)
+	  return -1;
+	 
+	*msgs = (bootloader_log_msg_t *) ((uint8_t *) grub_log + grub_log->next_off - sizeof (**msgs));
+	*type_off = 0;
+      }
+    }
+  while (act_len >= max_len);
+
+  return act_len;
+}
+
+uint32_t
+grub_log_vwrite_msg (bootloader_log_msg_t **msgs, uint32_t *type_off, const char *fmt, ...)
+{
+  va_list args;
+  uint32_t act_len;
+
+  va_start (args, fmt);
+  act_len = grub_log_write_msg (msgs, type_off, fmt, args);
+  va_end (args);
+
+  return act_len;
+}
+
 int
 grub_log_add_msg (uint32_t level, const char *file, const int line, const char *fmt, ...)
 {
   bootloader_log_msg_t *msgs;
   va_list args;
   uint32_t act_len;
-  uint32_t max_len;
   uint32_t type_off;
 
   if (grub_log == NULL)
@@ -80,67 +119,30 @@ grub_log_add_msg (uint32_t level, const char *file, const int line, const char *
   msgs->level = level;
   /* msgs->facility = 0; */
   grub_log->next_off += sizeof (*msgs);
- 
-  printf ("Writing type\n");
-  do
-    {
-      max_len = grub_log->size - grub_log->next_off;
-      act_len = snprintf (msgs->type, max_len, "%s", file);
-     
-      if (act_len >= max_len)
-      {
-        if (grub_log_realloc () == GRUB_ERR_OUT_OF_MEMORY)
-	  return GRUB_ERR_OUT_OF_MEMORY;
+  type_off = 0;
 
-	/* Reset msgs pointer in case memory moves to a new location. */
-	msgs = (bootloader_log_msg_t *) ((uint8_t *) grub_log + grub_log->next_off - sizeof (*msgs));
-      }
-    }
-  while (act_len >= max_len);
+  printf ("Writing type\n");
+  act_len = grub_log_vwrite_msg (&msgs, &type_off, "%s", file);
+  if (act_len == -1)
+    return GRUB_ERR_OUT_OF_MEMORY;
 
   grub_log->next_off += act_len + 1;
   type_off = act_len + 1;
 
   printf ("Writing msg beginning\n");
-  do
-    {
-      max_len = grub_log->size - grub_log->next_off;
-      act_len = snprintf (msgs->type + type_off, max_len, "%s:%d: ", file, line);
-     
-      if (act_len >= max_len)
-      {
-        if (grub_log_realloc () == GRUB_ERR_OUT_OF_MEMORY)
-	  return GRUB_ERR_OUT_OF_MEMORY;
-
-	/* Reset msgs pointer and type_off in case memory moves to a new location. */
-	msgs = (bootloader_log_msg_t *) ((uint8_t *) grub_log + grub_log->next_off - sizeof( *msgs));
-	type_off = 0;
-      }
-    }
-  while (act_len >= max_len);
+  act_len = grub_log_vwrite_msg (&msgs, &type_off, "%s:%d: ", file, line);
+  if (act_len == -1)
+    return GRUB_ERR_OUT_OF_MEMORY;
 
   grub_log->next_off += act_len;
   type_off += act_len;
 
   printf("Writing variable format\n");
-  do
-    {
-      max_len = grub_log->size - grub_log->next_off;
-      va_start(args, fmt);
-      act_len = vsnprintf (msgs->type + type_off, max_len, fmt, args);
-      va_end(args);     
-
-      if (act_len >= max_len)
-      {
-        if (grub_log_realloc () == GRUB_ERR_OUT_OF_MEMORY)
-	  return GRUB_ERR_OUT_OF_MEMORY;
-
-	/* Reset msgs pointer and type_off in case memory moves to a new location. */
-	msgs = (bootloader_log_msg_t *) ((uint8_t *) grub_log + grub_log->next_off - sizeof (*msgs));
-	type_off = 0;
-      }
-    }
-  while (act_len >= max_len);
+  va_start (args, fmt);
+  act_len = grub_log_write_msg (&msgs, &type_off, fmt, args);
+  va_end (args);
+  if (act_len == -1)
+    return GRUB_ERR_OUT_OF_MEMORY;
 
   grub_log->next_off += act_len + 1;
 
@@ -170,8 +172,7 @@ main()
   printf ("Msg: %s\n\n", msgs->type + strlen (msgs->type) + 1);
 
   msgs = (bootloader_log_msg_t *) ((uint8_t *) grub_log + grub_log->next_off); 
-  grub_log_add_msg (2, "TBOOT", 145, "%s %s:%d", "Hello", "World", 2);
-
+  grub_log_add_msg (2, "TBOOT", 177, "%s %s:%i", "Hello", "World!", 2);
   printf ("Log Buffer 2\n");
   printf ("Level: %i\n", msgs->level);
   printf ("Facility: %i\n", msgs->facility);
