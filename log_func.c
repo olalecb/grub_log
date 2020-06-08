@@ -62,7 +62,7 @@ grub_log_realloc (void)
     return GRUB_ERR_OUT_OF_MEMORY; 
 
   grub_log = realloc_log;
-  memset (grub_log + grub_log->size, 0, BL_SIZE_INIT);
+  memset ((uint8_t *) grub_log + grub_log->size, 0, BL_SIZE_INIT);
   grub_log->size = size;  
 
   return 0;
@@ -86,7 +86,7 @@ grub_log_write_msg (char *msg, const char *fmt, va_list args)
         {
   	  if (grub_log_realloc () != GRUB_ERR_NONE)
 	    return -1;
-	  /* printf ("Reassigning!\n"); */
+
 	  msg = (char *) ((uint8_t *) grub_log + grub_log->next_off);
         }
     }
@@ -119,7 +119,7 @@ grub_log_add_msg (uint32_t level, const char *file, const int line, const char *
   if (grub_log == NULL)
     return GRUB_ERR_BUG;
 
-  if (grub_log->next_off + sizeof(*msgs) >= grub_log->size)
+  if (grub_log->next_off + sizeof (*msgs) >= grub_log->size)
     grub_log_realloc ();
 
   msgs = (bootloader_log_msg_t *) ((uint8_t *) grub_log + grub_log->next_off);
@@ -194,16 +194,14 @@ int
 main()
 {
   bootloader_log_msg_t *msgs;
-  
+  int i; 
+ 
   grub_log_init ();
-  
-  /*
-  grub_log_add_msg (1, "One", 20, "Message 1");
-  grub_log_add_msg (2, "Two", 177, "%s %s:%i", "Message", "Number", 2);
-  grub_log_add_msg (3, "Three", 177, "%s %s:%i", "Message", "Number", 3);
-  grub_log_add_msg (4, "Four", 177, "%s %s:%i", "Message", "Number", 4);
-  grub_log_add_msg (5, "Five", 177, "%s %s:%i", "Message", "Number", 5);
-  */
+
+  for(i = 0; i<500; i++)
+    grub_log_add_msg (i, "TBOOT", i, "%s %s:%i", "Hello", "World!", i);
+ 
+  grub_log_print ();
 
   /*printf ("Log Buffer Header Before\n");
   printf ("Version: %i\n", grub_log->version);
@@ -227,27 +225,13 @@ main()
   printf ("Facility: %i\n", msgs->facility);
   printf ("Type: %s\n", msgs->type); 
   printf ("Msg: %s\n\n", msgs->type + strlen (msgs->type) + 1);
-  */
 
-  int i;
-  for(i = 0; i<500; i++)
-    {
-      printf ("%i\n", i);
-      printf ("size%d\n", grub_log->size);
-      grub_log_add_msg (i, "TBOOT", i, "%s %s:%i", "Hello", "World!", i);
-    }
-  grub_log_print ();
-
-  /*
   printf ("Log Buffer Header After\n");
   printf ("Version: %i\n", grub_log->version);
   printf ("Producer: %i\n", grub_log->producer);
   printf ("Size: %i\n", grub_log->size);
   printf ("Next_off: %i\n\n", grub_log->next_off);
   
-  printf("Sizeof(g): %d\n", sizeof(*grub_log));
-  printf("sizof(b): %d\n", sizeof(bootloader_log_t));
-
   printf("DONE!\n");*/
   return 0;
 }
