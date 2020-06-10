@@ -69,18 +69,22 @@ grub_log_realloc (void)
 }
 
 uint32_t
-grub_log_write_msg (char *msg, const char *fmt, va_list args)
+grub_log_write_msg (char *msg, va_list prev_args, const char *fmt, ...)
 {
-  va_list args_copy;
+  va_list args;
   uint32_t max_len;
   uint32_t act_len;
 
   do
     {
-      va_copy (args_copy, args);
+      if (prev_args == NULL)
+        va_start (args, fmt);
+      else
+        va_copy (args, prev_args);
+
       max_len = grub_log->size - grub_log->next_off;
-      act_len = vsnprintf (msg, max_len, fmt, args_copy);
-      va_end(args_copy);
+      act_len = vsnprintf (msg, max_len, fmt, args);
+      va_end (args);
 
       if (act_len >= max_len)
         {
@@ -91,19 +95,6 @@ grub_log_write_msg (char *msg, const char *fmt, va_list args)
         }
     }
   while (act_len >= max_len);
-
-  return act_len;
-}
-
-uint32_t
-grub_log_vwrite_msg (char *msg, const char *fmt, ...)
-{
-  va_list args;
-  uint32_t act_len;
-
-  va_start (args, fmt);
-  act_len = grub_log_write_msg (msg, fmt, args);
-  va_end (args);
 
   return act_len;
 }
@@ -128,7 +119,7 @@ grub_log_add_msg (uint32_t level, const char *file, const int line, const char *
   grub_log->next_off += sizeof (*msgs);
 
   printf ("Writing type\n");
-  act_len = grub_log_vwrite_msg (msgs->type, "%s", file);
+  act_len = grub_log_write_msg (msgs->type, NULL, "%s", file);
   if (act_len == -1)
     return GRUB_ERR_OUT_OF_MEMORY;
   
@@ -136,16 +127,16 @@ grub_log_add_msg (uint32_t level, const char *file, const int line, const char *
   type_off = act_len + 1;
 
   printf ("Writing msg beginning\n");
-  act_len = grub_log_vwrite_msg (msgs->type + type_off, "%s:%d: ", file, line);
+  act_len = grub_log_write_msg (msgs->type + type_off, NULL, "%s:%d: ", file, line);
   if (act_len == -1)
     return GRUB_ERR_OUT_OF_MEMORY;
 
   grub_log->next_off += act_len;
   type_off += act_len;
 
-  printf("Writing variable format\n");
+  printf ("Writing variable format\n");
   va_start (args, fmt);
-  act_len = grub_log_write_msg (msgs->type + type_off, fmt, args);
+  act_len = grub_log_write_msg (msgs->type + type_off, args, fmt);
   va_end (args);
   if (act_len == -1)
     return GRUB_ERR_OUT_OF_MEMORY;
@@ -190,6 +181,50 @@ grub_log_print (void)
     }
 }
 
+void
+grub_log_write_file (char *filename)
+{
+  FILE *log_file;
+
+  if (grub_log == NULL)
+    return;
+
+  log_file = fopen (filename, "w");
+  
+  if (log_file == NULL)
+    return;
+
+  fwrite (grub_log, grub_log->next_off, 1, log_file);
+
+  fclose (log_file);
+}
+
+void
+grub_log_read_file (char *filename)
+{
+  FILE *log_file;
+  uint32_t file_size;
+ 
+  if (grub_log == NULL)
+    return;
+
+  log_file = fopen (filename, "r");
+
+  if (log_file == NULL)
+    return;
+
+  fseek (log_file, 0, SEEK_END);
+  file_size = ftell (log_file);
+  fseek (log_file, 0, SEEK_SET);
+
+  while (file_size > grub_log->size)
+    grub_log_realloc ();
+
+  fread (grub_log, file_size, 1, log_file);
+
+  fclose (log_file);
+}
+
 int 
 main()
 {
@@ -198,9 +233,16 @@ main()
  
   grub_log_init ();
 
-  for(i = 0; i<500; i++)
-    grub_log_add_msg (i, "TBOOT", i, "%s %s:%i", "Hello", "World!", i);
- 
+  /* grub_log_read_file ("log_file"); */
+
+  for (i = 0; i<50; i++)
+    grub_log_add_msg (i, __FILE__, __LINE__, "%s %s:%i", "Hello", "World!", i);
+
+  grub_log_add_msg (0, __FILE__, __LINE__, "%s %s:%i", "Hello", "World!", __LINE__);
+  grub_log_add_msg (0, __FILE__, __LINE__, "%s %s:%i", "Hello", "World!", __LINE__);
+  
+  grub_log_write_file ("log_file");
+
   grub_log_print ();
 
   /*printf ("Log Buffer Header Before\n");
