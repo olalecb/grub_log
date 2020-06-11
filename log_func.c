@@ -3,6 +3,8 @@
 #include <string.h>
 #include <inttypes.h>
 #include <stdarg.h>
+#include <unistd.h>
+#include <fcntl.h>
 
 #define BL_SIZE_INIT 4096
 #define GRUB_PACKED __attribute__((packed))
@@ -118,7 +120,7 @@ grub_log_add_msg (uint32_t level, const char *file, const int line, const char *
   /* msgs->facility = 0; */
   grub_log->next_off += sizeof (*msgs);
 
-  printf ("Writing type\n");
+  /* printf ("Writing type\n"); */
   act_len = grub_log_write_msg (msgs->type, NULL, "%s", file);
   if (act_len == -1)
     return GRUB_ERR_OUT_OF_MEMORY;
@@ -126,7 +128,7 @@ grub_log_add_msg (uint32_t level, const char *file, const int line, const char *
   grub_log->next_off += act_len + 1;
   type_off = act_len + 1;
 
-  printf ("Writing msg beginning\n");
+  /* printf ("Writing msg beginning\n"); */
   act_len = grub_log_write_msg (msgs->type + type_off, NULL, "%s:%d: ", file, line);
   if (act_len == -1)
     return GRUB_ERR_OUT_OF_MEMORY;
@@ -134,7 +136,7 @@ grub_log_add_msg (uint32_t level, const char *file, const int line, const char *
   grub_log->next_off += act_len;
   type_off += act_len;
 
-  printf ("Writing variable format\n");
+ /*  printf ("Writing variable format\n"); */
   va_start (args, fmt);
   act_len = grub_log_write_msg (msgs->type + type_off, args, fmt);
   va_end (args);
@@ -184,57 +186,52 @@ grub_log_print (void)
 void
 grub_log_write_file (char *filename)
 {
-  FILE *log_file;
+  uint32_t log_fd;
 
   if (grub_log == NULL)
     return;
 
-  log_file = fopen (filename, "w");
+  log_fd = open (filename, O_WRONLY | O_TRUNC | O_CREAT);
   
-  if (log_file == NULL)
+  if (log_fd < 0)
     return;
 
-  fwrite (grub_log, grub_log->next_off, 1, log_file);
+  write (log_fd, grub_log, grub_log->size);
 
-  fclose (log_file);
+  close (log_fd);
 }
 
 void
 grub_log_read_file (char *filename)
 {
-  FILE *log_file;
+  uint32_t log_fd;
   uint32_t file_size;
  
-  if (grub_log == NULL)
+  log_fd = open (filename, O_RDONLY);
+
+  if (log_fd < 0)
     return;
 
-  log_file = fopen (filename, "r");
+  file_size = lseek (log_fd, 0, SEEK_END);
+  lseek (log_fd, 0, SEEK_SET);
 
-  if (log_file == NULL)
-    return;
+  grub_log = malloc (file_size);
 
-  fseek (log_file, 0, SEEK_END);
-  file_size = ftell (log_file);
-  fseek (log_file, 0, SEEK_SET);
+  read (log_fd, grub_log, file_size);
 
-  while (file_size > grub_log->size)
-    grub_log_realloc ();
-
-  fread (grub_log, file_size, 1, log_file);
-
-  fclose (log_file);
+  close (log_fd);
 }
 
 int 
-main()
+main (void)
 {
   bootloader_log_msg_t *msgs;
   int i; 
- 
+
+  //grub_log_read_file ("log_file");
+
   grub_log_init ();
-
-  /* grub_log_read_file ("log_file"); */
-
+   
   for (i = 0; i<50; i++)
     grub_log_add_msg (i, __FILE__, __LINE__, "%s %s:%i", "Hello", "World!", i);
 
