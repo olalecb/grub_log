@@ -129,7 +129,7 @@ grub_log_add_msg (uint32_t level, const char *file, const int line, const char *
   type_off = act_len + 1;
 
   /* printf ("Writing msg beginning\n"); */
-  act_len = grub_log_write_msg (msgs->type + type_off, NULL, "%s:%d: ", file, line);
+  act_len = grub_log_write_msg (msgs->type + type_off, NULL, "%d: ", line);
   if (act_len == -1)
     return GRUB_ERR_OUT_OF_MEMORY;
 
