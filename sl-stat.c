@@ -4,51 +4,11 @@
 #include <inttypes.h>
 #include <unistd.h>
 #include <fcntl.h>
-
-//Regs
 #include <getopt.h>
 #include <stdbool.h>
 #include <sys/mman.h>
 #include <errno.h>
-
-#define TXT_PUB_CONFIG_REGS_BASE 0xfed30000
-#define TXT_PRIV_CONFIG_REGS_BASE 0xfed20000
-#define TXT_CONFIG_REGS_SIZE (TXT_PUB_CONFIG_REGS_BASE - \
-				 TXT_PRIV_CONFIG_REGS_BASE)
-#define TXTCR_STS 0x0000
-#define TXTCR_ESTS 0x0008
-#define TXTCR_ERRORCODE 0x0030
-#define TXTCR_VER_FSBIF 0x0100
-#define TXTCR_DIDVID 0x0110
-#define TXTCR_VER_QPIIF 0x0200
-#define TXTCR_SINIT_BASE 0x0270
-#define TXTCR_SINIT_SIZE 0x0278
-#define TXTCR_HEAP_BASE 0x0300
-#define TXTCR_HEAP_SIZE 0x0308
-#define TXTCR_DPR 0x330
-#define TXTCR_PUBLIC_KEY 0x0400
-#define TXTCR_E2STS 0x08f0
-
-#define PACKED __attribute__((packed))
-
-struct bootloader_log_msg
-{
-	uint32_t level;
-	uint32_t facility;
-	char type[];
-	/* char msg[] */
-} PACKED;
-typedef struct bootloader_log_msg bootloader_log_msg_t;
-
-struct bootloader_log
-{
-	uint32_t version;
-	uint32_t producer;
-	uint32_t size;
-	uint32_t next_off;
-	bootloader_log_msg_t msgs[];
-} PACKED;
-typedef struct bootloader_log bootloader_log_t;
+#include "sl-stat.h"
 
 static bootloader_log_t *log;
 
@@ -72,61 +32,30 @@ void read_file(char *filename)
 	close(log_fd);
 }
 
-/*
- * REGISTERS
- */
-typedef void txt_heap_t;
+void print_msgs(void)
+{
+	uint32_t offset;
+	uint32_t type_len;
+	uint32_t msg_len;
+	bootloader_log_msg_t *msgs;
 
-typedef union {
-	uint64_t _raw;
-	struct {
-		uint64_t senter_done_sts : 1;
-		uint64_t sexit_done_sts : 1;
-		uint64_t reserved1 : 4;
-		uint64_t mem_config_lock_sts : 1;
-		uint64_t private_open_sts : 1;
-		uint64_t reserved2 : 7;
-		uint64_t locality_1_open_sts : 1;
-		uint64_t locality_2_open_sts : 1;
-	};
-} txt_sts_t;
+	if (log == NULL)
+		return;
 
-typedef union {
-	uint64_t _raw;
-	struct {
-		uint64_t txt_reset_sts : 1;
-	};
-} txt_ests_t;
+	offset = sizeof(*log);
 
-typedef union {
-	uint64_t _raw;
-	struct {
-		uint64_t reserved : 1;
-		uint64_t secrets_sts : 1;
-	};
-} txt_e2sts_t;
+	while (offset < log->next_off) {
+		msgs = (bootloader_log_msg_t *) ((uint8_t *) log + offset);
 
-typedef union {
-	uint64_t _raw;
-	struct {
-		uint16_t vendor_id;
-		uint16_t device_id;
-		uint16_t revision_id;
-		uint16_t reserved;
-	};
-} txt_didvid_t;
+		printf("%s:", msgs->type);
+		type_len = strlen(msgs->type) + 1;
 
-typedef union {
-	uint64_t _raw;
-	struct {
-		uint64_t lock : 1;
-		uint64_t reserved1 : 3;
-		uint64_t top : 8;
-		uint64_t reserved2 : 8;
-		uint64_t size : 12;
-		uint64_t reserved3 : 32; 
-	};
-} txt_dpr_t;
+		printf("%s\n", msgs->type + type_len);
+		msg_len = strlen(msgs->type + type_len) + 1;
+
+		offset += sizeof(*msgs) + type_len + msg_len;
+	}
+}
 
 static inline const char * bit_to_str(uint64_t b)
 {
@@ -242,23 +171,367 @@ static void display_config_regs(void *txt_config_base)
 	printf("\t secrets flag set: %s\n", bit_to_str(e2sts.secrets_sts));
 	printf("***********************************************************\n");
 }
-//HEAP
-/*
-typedef struct __packed {
-	uint32_t type;
-	uint32_t size;
-	uint8_t data[];
-} heap_ext_data_element_t;
 
-typedef struct __packed {
-	uint32_t version;
-	uint32_t bios_sinit_size;
-	uint64_t lcp_pd_base;
-	uint64_t lcp_pd_size;
-	uint32_t num_logical_procs;
-	uint64_t flags;
-	heap_ext_data_element_t ext_data_elts[];
-} bios_data_t;
+static void print_bios_spec_ver_elt(const heap_ext_data_element_t *elt)
+{
+	const heap_bios_spec_ver_elt_t *bios_spec_ver_elt =
+		(const heap_bios_spec_ver_elt_t *)elt->data;
+
+	printf("\t\t BIOS_SPEC_VER:\n");
+	printf("\t\t     major: 0x%x\n", bios_spec_ver_elt->spec_ver_major);
+	printf("\t\t     minor: 0x%x\n", bios_spec_ver_elt->spec_ver_minor);
+	printf("\t\t     rev: 0x%x\n", bios_spec_ver_elt->spec_ver_rev);
+}
+
+static void print_acm_elt(const heap_ext_data_element_t *elt)
+{
+	const heap_acm_elt_t *acm_elt = (const heap_acm_elt_t *)elt->data;
+	unsigned int i;
+
+	printf("\t\t ACM:\n");
+	printf("\t\t     num_acms: %u\n", acm_elt->num_acms);
+	for (i = 0; i < acm_elt->num_acms; i++)
+		printf("\t\t     acm_addrs[%u]: 0x%jx\n", i, acm_elt->acm_addrs[i]);
+}
+
+static inline void print_uuid(const uuid_t *uuid)
+{
+	printf("{0x%08x, 0x%04x, 0x%04x, 0x%04x, \n"
+		"\t\t{0x%02x, 0x%02x, 0x%02x, 0x%02x, 0x%02x, 0x%02x}}",
+		uuid->data1, (uint32_t)uuid->data2, (uint32_t)uuid->data3,
+		(uint32_t)uuid->data4, (uint32_t)uuid->data5[0],
+		(uint32_t)uuid->data5[1], (uint32_t)uuid->data5[2],
+		(uint32_t)uuid->data5[3], (uint32_t)uuid->data5[4],
+		(uint32_t)uuid->data5[5]);	
+}
+
+static void print_custom_elt(const heap_ext_data_element_t *elt)
+{
+	const heap_custom_elt_t *custom_elt = (const heap_custom_elt_t *)elt->data;
+
+	printf("\t\t CUSTOM:\n");
+	printf("\t\t     size: %u\n", elt->size);
+	printf("\t\t     uuid: "); print_uuid(&custom_elt->uuid);            
+	printf("\n");
+}
+
+static inline unsigned int get_hash_size(uint16_t hash_alg)
+{	
+	if (hash_alg == TB_HALG_SHA1 || hash_alg == TB_HALG_SHA1_LG)
+		return SHA1_LENGTH;
+	else if (hash_alg == TB_HALG_SHA256)
+		return SHA256_LENGTH;
+	else if (hash_alg == TB_HALG_SM3)
+		return SM3_LENGTH;
+	else if (hash_alg == TB_HALG_SHA384)
+		return SHA384_LENGTH;
+	else if (hash_alg == TB_HALG_SHA512)
+		return SHA512_LENGTH;
+	else
+		return 0;
+}
+
+void print_hash(const tb_hash_t *hash, uint16_t hash_alg)
+{
+	if (hash == NULL) {
+		printf("NULL");
+		return;
+	}	
+
+	if (hash_alg == TB_HALG_SHA1)
+		print_hex(NULL, (uint8_t *)hash->sha1, sizeof(hash->sha1));
+	else if (hash_alg == TB_HALG_SHA256)
+		print_hex(NULL, (uint8_t *)hash->sha256, sizeof(hash->sha256));
+	else if (hash_alg == TB_HALG_SM3)
+		print_hex(NULL, (uint8_t *)hash->sm3, sizeof(hash->sm3));
+	else if (hash_alg == TB_HALG_SHA384)
+		print_hex(NULL, (uint8_t *)hash->sha384, sizeof(hash->sha384));
+	else {
+		printf("unsupported hash alg (%u)\n", hash_alg);
+		return;
+	}
+}
+
+static inline void print_heap_hash(const sha1_hash_t hash)
+{
+	print_hash((const tb_hash_t *)hash, TB_HALG_SHA1);
+}
+
+void print_event(const tpm12_pcr_event_t *evt)
+{
+	printf("\t\t\t Event:\n");
+	printf("\t\t\t     PCRIndex: %u\n", evt->pcr_index);
+	printf("\t\t\t         Type: 0x%x\n", evt->type);
+	printf("\t\t\t       Digest: ");
+	print_heap_hash(evt->digest);
+	printf("\t\t\t         Data: %u bytes", evt->data_size);
+	print_hex("\t\t\t         ", evt->data, evt->data_size);
+}
+
+static void print_evt_log(const event_log_container_t *elog)
+{
+	printf("\t\t\t Event Log Container:\n");
+	printf("\t\t\t     Signature: %s\n", elog->signature);
+	printf("\t\t\t  ContainerVer: %u.%u\n",
+		elog->container_ver_major, elog->container_ver_minor);
+	printf("\t\t\t   PCREventVer: %u.%u\n",
+		elog->pcr_event_ver_major, elog->pcr_event_ver_minor);
+	printf("\t\t\t          Size: %u\n", elog->size);
+	printf("\t\t\t  EventsOffset: [%u,%u]\n",
+		elog->pcr_events_offset, elog->next_event_offset);
+
+	const tpm12_pcr_event_t *curr, *next;
+	curr = (tpm12_pcr_event_t *)((void*)elog + elog->pcr_events_offset);
+	next = (tpm12_pcr_event_t *)((void*)elog + elog->next_event_offset);
+
+	while (curr < next) {
+		print_event(curr);
+		curr = (void *)curr + sizeof(*curr) + curr->data_size;
+	}
+}
+
+static void print_evt_log_ptr_elt(const heap_ext_data_element_t *elt)
+{
+	const heap_event_log_ptr_elt_t *elog_elt =
+		(const heap_event_log_ptr_elt_t *)elt->data;
+
+	printf("\t\t EVENT_LOG_POINTER:\n");
+	printf("\t\t       size: %u\n", elt->size);
+	printf("\t\t  elog_addr: 0x%jx\n", elog_elt->event_log_phys_addr);
+
+	if (elog_elt->event_log_phys_addr)
+		print_evt_log((event_log_container_t *)(unsigned long)
+			elog_elt->event_log_phys_addr);
+}
+
+void print_event_2(void *evt, uint16_t alg)
+{
+	uint32_t hash_size, data_size; 
+	void *next = evt;
+
+	hash_size = get_hash_size(alg); 
+	if (hash_size == 0)
+		return;
+
+	printf("\t\t\t Event:\n");
+	printf("\t\t\t     PCRIndex: %u\n", *((uint32_t *)next));
+    
+	if (*((uint32_t *)next) > 24 && *((uint32_t *)next) != 0xFF) {
+		printf("\t\t\t           Wrong Event Log.\n");
+		return;
+	}
+    
+	next += sizeof(uint32_t);
+	printf("\t\t\t         Type: 0x%x\n", *((uint32_t *)next));
+
+	if (*((uint32_t *)next) > 0xFFF) {
+		printf("\t\t\t           Wrong Event Log.\n");
+		return;
+	}
+
+	next += sizeof(uint32_t);
+	printf("\t\t\t       Digest: ");
+	print_hex(NULL, (uint8_t *)next, hash_size);
+	next += hash_size;
+	data_size = *(uint32_t *)next;
+	printf("\t\t\t         Data: %u bytes", data_size);
+	if (data_size > 4096) {
+		printf("\t\t\t           Wrong Event Log.\n");
+		return;
+	}
+
+	next += sizeof(uint32_t);
+	if (data_size)
+		print_hex("\t\t\t         ", (uint8_t *)next, data_size);
+	else
+		printf("\n");
+}
+
+static void print_evt_log_ptr_elt_2(const heap_ext_data_element_t *elt)
+{
+	const heap_event_log_ptr_elt2_t *elog_elt =
+		(const heap_event_log_ptr_elt2_t *)elt->data;
+	const heap_event_log_descr_t *log_descr;
+	unsigned int i;
+
+	printf("\t\t EVENT_LOG_PTR:\n");
+	printf("\t\t       size: %u\n", elt->size);
+	printf("\t\t      count: %d\n", elog_elt->count);
+
+	for (i = 0; i<elog_elt->count; i++) {
+		log_descr = &elog_elt->event_log_descr[i];
+		printf("\t\t\t Log Descrption:\n");
+		printf("\t\t\t             Alg: %u\n", log_descr->alg);
+		printf("\t\t\t            Size: %u\n", log_descr->size);
+		printf("\t\t\t    EventsOffset: [%u,%u]\n",
+			log_descr->pcr_events_offset,
+			log_descr->next_event_offset);
+
+		if (log_descr->pcr_events_offset == log_descr->next_event_offset) {
+			printf("\t\t\t              No Event Log.\n");
+			continue;
+		}
+
+		uint32_t hash_size, data_size; 
+		hash_size = get_hash_size(log_descr->alg); 
+		if (hash_size == 0)
+			return;
+
+		void *curr, *next;
+
+		curr = (void *)(unsigned long)log_descr->phys_addr + 
+			log_descr->pcr_events_offset;
+		next = (void *)(unsigned long)log_descr->phys_addr +
+			log_descr->next_event_offset;
+        
+		//It is required for each of the non-SHA1 event log the first entry to be the following
+		//TPM1.2 style TCG_PCR_EVENT record specifying type of the log:
+		//TCG_PCR_EVENT.PCRIndex = 0
+		//TCG_PCR_EVENT.EventType = 0x03 // EV_NO_ACTION per TCG EFI
+					// Platform specification
+		//TCG_PCR_EVENT.Digest = {00…00} // 20 zeros
+		//TCG_PCR_EVENT.EventDataSize = sizeof(TCG_LOG_DESCRIPTOR).
+		//TCG_PCR_EVENT.EventData = TCG_LOG_DESCRIPTOR
+		//The digest of this record MUST NOT be extended into any PCR.
+
+		if (log_descr->alg != TB_HALG_SHA1){
+			print_event_2(curr, TB_HALG_SHA1);
+			curr += sizeof(tpm12_pcr_event_t) + sizeof(tpm20_log_descr_t);
+		}
+
+		while (curr < next) {
+			print_event_2(curr, log_descr->alg);
+			data_size = *(uint32_t *)(curr + 2*sizeof(uint32_t) + hash_size);
+			curr += 3*sizeof(uint32_t) + hash_size + data_size;
+		}
+	}
+}
+
+uint32_t print_event_2_1_log_header(void *evt)
+{
+	uint32_t i;
+	tcg_pcr_event *evt_ptr = (tcg_pcr_event *)evt;
+	tcg_efi_specid_event_strcut *evt_data_ptr = (tcg_efi_specid_event_strcut *) evt_ptr->event_data;
+
+	printf("\t TCG Event Log Header:\n");
+	printf("\t\t       pcr_index: %u\n", evt_ptr->pcr_index);
+	printf("\t\t      event_type: %u\n", evt_ptr->event_type);
+	printf("\t\t          digest: %s\n", evt_ptr->digest);
+	printf("\t\t event_data_size: %u\n", evt_ptr->event_data_size);
+
+	// print out event log header data
+
+	printf("\t\t 	   header event data:  \n"); 
+	printf("\t\t\t              signature: %s\n", evt_data_ptr->signature);
+	printf("\t\t\t         platform_class: %u\n", evt_data_ptr->platform_class);
+	printf("\t\t\t     spec_version_major: %u\n", evt_data_ptr->spec_version_major);
+	printf("\t\t\t     spec_version_minor: %u\n", evt_data_ptr->spec_version_minor);
+	printf("\t\t\t            spec_errata: %u\n", evt_data_ptr->spec_errata);
+	printf("\t\t\t             uintn_size: %u\n", evt_data_ptr->uintn_size);
+	printf("\t\t\t   number_of_algorithms: %u\n", evt_data_ptr->number_of_algorithms);
+
+	for (i = 0; i < evt_data_ptr->number_of_algorithms; i++) {
+		printf("\t\t\t\t   algorithm_id: 0x%x \n", evt_data_ptr->digestSizes[i].algorithm_id);
+		printf("\t\t\t\t    digest_size: %u\n", evt_data_ptr->digestSizes[i].digest_size);
+	}
+
+	printf("\t\t\t       vendor_info: %u bytes\n", evt_data_ptr->vendor_info_size);
+	print_hex(NULL, evt_data_ptr->vendor_info, evt_data_ptr->vendor_info_size);
+
+	return evt_ptr->event_data_size;
+}
+
+uint32_t print_event_2_1(void *evt)
+{
+	tcg_pcr_event2 *evt_ptr = (tcg_pcr_event2 *)evt;
+	uint32_t i;
+	uint8_t *evt_data_ptr;
+	uint16_t hash_alg;
+	uint32_t event_size = 0;
+	printf("\t\t\t TCG Event:\n");
+	printf("\t\t\t      pcr_index: %u\n", evt_ptr->pcr_index);
+	printf("\t\t\t     event_type: 0x%x\n", evt_ptr->event_type);
+	printf("\t\t\t          count: %u\n", evt_ptr->digest.count);
+	if (evt_ptr->digest.count != 0) {
+		evt_data_ptr = (uint8_t *)evt_ptr->digest.digests[0].digest;
+		hash_alg = evt_ptr->digest.digests[0].hash_alg;
+		for (i = 0; i < evt_ptr->digest.count; i++) { 
+			switch (hash_alg) {
+				case TB_HALG_SHA1:
+					printf("SHA1: \n");
+					print_hex(NULL, evt_data_ptr, SHA1_LENGTH);
+					evt_data_ptr += SHA1_LENGTH;
+					break;
+ 
+				case TB_HALG_SHA256:
+					printf("SHA256: \n");
+					print_hex(NULL, evt_data_ptr, SHA256_LENGTH);
+					evt_data_ptr += SHA256_LENGTH;
+					break;
+ 
+				case TB_HALG_SM3:
+					printf("SM3_256: \n");
+					print_hex(NULL, evt_data_ptr, SM3_LENGTH);
+					evt_data_ptr += SM3_LENGTH;
+					break;
+ 
+				case TB_HALG_SHA384:
+					printf("SHA384: \n");
+					print_hex(NULL, evt_data_ptr, SHA384_LENGTH);
+					evt_data_ptr += SHA384_LENGTH;
+					break;
+ 
+				case TB_HALG_SHA512:
+					printf("SHA512:  \n");
+					print_hex(NULL, evt_data_ptr, SHA512_LENGTH);
+					evt_data_ptr += SHA512_LENGTH;
+					break;
+				default:
+					printf("Unsupported algorithm: %u\n", evt_ptr->digest.digests[i].hash_alg);
+			}
+			hash_alg = (uint16_t)*evt_data_ptr;
+			evt_data_ptr += sizeof(uint16_t);
+		}
+		evt_data_ptr -= sizeof(uint16_t);
+		event_size = (uint32_t)*evt_data_ptr;
+		printf("\t\t\t     event_data: %u bytes", event_size);
+		evt_data_ptr += sizeof(uint32_t);
+		print_hex("\t\t\t     ", evt_data_ptr, event_size);
+	}
+	else { 
+		printf("sth wrong in TCG event log: algoritm count = %u\n", evt_ptr->digest.count);
+		evt_data_ptr= (uint8_t *)evt +12;
+	}
+	return (evt_data_ptr + event_size - (uint8_t *)evt);
+}
+
+static void print_evt_log_ptr_elt_2_1(const heap_ext_data_element_t *elt)
+{
+	const heap_event_log_ptr_elt2_1_t *elog_elt = (const heap_event_log_ptr_elt2_1_t *)elt->data;
+   
+	printf("\t TCG EVENT_LOG_PTR:\n");
+	printf("\t\t       type: %d\n", elt->type);
+	printf("\t\t       size: %u\n", elt->size);
+	printf("\t TCG Event Log Descrption:\n");
+	printf("\t     allcoated_event_container_size: %u\n", elog_elt->allcoated_event_container_size);
+	printf("\t                       EventsOffset: [%u,%u]\n", 
+		elog_elt->first_record_offset, elog_elt->next_record_offset);
+
+	if (elog_elt->first_record_offset == elog_elt->next_record_offset) {
+		printf("\t\t\t No Event Log found.\n");
+		return;
+	}
+	void *curr, *next;
+
+	curr = (void *)(unsigned long)elog_elt->phys_addr + elog_elt->first_record_offset;
+	next = (void *)(unsigned long)elog_elt->phys_addr + elog_elt->next_record_offset;
+	uint32_t event_header_data_size = print_event_2_1_log_header(curr);
+		
+	curr += sizeof(tcg_pcr_event) + event_header_data_size;
+	while (curr < next) {
+		curr += print_event_2_1(curr);
+	}
+}
 
 static inline uint64_t get_bios_data_size(const txt_heap_t *heap)
 {
@@ -270,21 +543,55 @@ static inline bios_data_t *get_bios_data_start(const txt_heap_t *heap)
 	return (bios_data_t *)((char *)heap + sizeof(uint64_t));
 }
 
+static void print_ext_data_elts(const heap_ext_data_element_t elts[])
+{
+	const heap_ext_data_element_t *elt = elts;
+
+	printf("\t ext_data_elts[]:\n");
+	while (elt->type != HEAP_EXTDATA_TYPE_END) {
+		switch ( elt->type ) {
+			case HEAP_EXTDATA_TYPE_BIOS_SPEC_VER:
+				print_bios_spec_ver_elt(elt);
+				break;
+			case HEAP_EXTDATA_TYPE_ACM:
+				print_acm_elt(elt);
+				break;
+			case HEAP_EXTDATA_TYPE_CUSTOM:
+				print_custom_elt(elt);
+				break;
+			case HEAP_EXTDATA_TYPE_TPM_EVENT_LOG_PTR:
+				print_evt_log_ptr_elt(elt);
+				break;
+			case HEAP_EXTDATA_TYPE_TPM_EVENT_LOG_PTR_2:
+				print_evt_log_ptr_elt_2(elt);
+				break;
+			case HEAP_EXTDATA_TYPE_TPM_EVENT_LOG_PTR_2_1:
+				print_evt_log_ptr_elt_2_1(elt);
+				break;
+			default:
+				printf("\t\t unknown element:  type: %u, size: %u\n",
+					elt->type, elt->size);
+				break;
+		}
+		elt = (void *)elt + elt->size;
+	}
+}
+
 static void print_bios_data(const bios_data_t *bios_data, uint64_t size)
 {
-    printk(TBOOT_DETA"bios_data (@%p, %jx):\n", bios_data,
-           *((uint64_t *)bios_data - 1));
-    printk(TBOOT_DETA"\t version: %u\n", bios_data->version);
-    printk(TBOOT_DETA"\t bios_sinit_size: 0x%x (%u)\n", bios_data->bios_sinit_size,
-           bios_data->bios_sinit_size);
-    printk(TBOOT_DETA"\t lcp_pd_base: 0x%jx\n", bios_data->lcp_pd_base);
-    printk(TBOOT_DETA"\t lcp_pd_size: 0x%jx (%ju)\n", bios_data->lcp_pd_size,
-           bios_data->lcp_pd_size);
-    printk(TBOOT_DETA"\t num_logical_procs: %u\n", bios_data->num_logical_procs);
-    if ( bios_data->version >= 3 )
-        printk(TBOOT_DETA"\t flags: 0x%08jx\n", bios_data->flags);
-    if ( bios_data->version >= 4 && size > sizeof(*bios_data) + sizeof(size) )
-        print_ext_data_elts(bios_data->ext_data_elts);
+	printf("bios_data (@%p, %jx):\n", bios_data,
+		*((uint64_t *)bios_data - 1));
+	printf("\t version: %u\n", bios_data->version);
+	printf("\t bios_sinit_size: 0x%x (%u)\n", bios_data->bios_sinit_size,
+		bios_data->bios_sinit_size);
+	printf("\t lcp_pd_base: 0x%jx\n", bios_data->lcp_pd_base);
+	printf("\t lcp_pd_size: 0x%jx (%ju)\n", bios_data->lcp_pd_size,
+		bios_data->lcp_pd_size);
+	printf("\t num_logical_procs: %u\n", bios_data->num_logical_procs);
+	if (bios_data->version >= 3)
+		printf("\t flags: 0x%08jx\n", bios_data->flags);
+	if (bios_data->version >= 4 && size > sizeof(*bios_data) + sizeof(size))
+		print_ext_data_elts(bios_data->ext_data_elts);
 }
 
 static void display_heap(txt_heap_t *heap)
@@ -293,7 +600,7 @@ static void display_heap(txt_heap_t *heap)
 	bios_data_t *bios_data = get_bios_data_start(heap);
 	print_bios_data(bios_data, size);
 }
-*/
+
 static int fd_mem;
 static void *buf_config_regs_read;
 static void *buf_config_regs_mmap;
@@ -315,7 +622,18 @@ static inline uint64_t read_config_reg(uint32_t config_regs_base, uint32_t reg)
 	return reg_val;
 }
 
-bool display_heap_optin = false;
+void print_help(const char *usage_str, const char *option_string[])
+{
+	uint16_t i = 0;
+	if (usage_str == NULL || option_string == NULL)
+		return;
+
+	printf("\nUsage: %s\n", usage_str);
+
+	for ( ; option_string[i] != NULL; i++ )
+		printf("%s", option_string[i]);
+}
+
 static const char *short_option = "h";
 static struct option longopts[] = {
 	{"heap", 0, 0, 'p'},
@@ -329,16 +647,16 @@ static const char *option_strings[] = {
 	NULL
 };
 
-//int print_regs(int argc, char *argv[])
-int print_regs()
-{	
+int print_regs(int argc, char *argv[])
+{
+	bool display_heap_optin = false;	
 	uint64_t heap = 0;
 	uint64_t heap_size = 0;
 	void *buf = NULL;
 	off_t seek_ret = -1;
 	size_t read_ret = 0;
 
-	/*int c;
+	int c;
 	while ((c = getopt_long(argc, (char **const)argv, short_option,
 		longopts, NULL)) != -1) {
 		switch (c) {
@@ -354,7 +672,7 @@ int print_regs()
 			return 1;
 		}
 	}
-	*/
+
 	fd_mem = open("/dev/mem", O_RDONLY);
 	if (fd_mem == -1) {
 		printf("ERROR: cannot open /dev/mem\n");
@@ -409,7 +727,7 @@ int print_regs()
 	/*
 	 * display heap
 	 */
-	/*if (heap && heap_size && display_heap_optin) {
+	if (heap && heap_size && display_heap_optin) {
 		seek_ret = lseek(fd_mem, heap, SEEK_SET);
 		if (seek_ret == -1) {
 			printf("ERROR: seeking TXT heap failed by lseek(): %s, try mmap\n",
@@ -442,7 +760,7 @@ int print_regs()
 			munmap(buf, heap_size);
 		}
 	}
-*/
+
 try_display_log:
 	if (buf_config_regs_read)
 		free(buf_config_regs_read);
@@ -454,34 +772,9 @@ try_display_log:
 	return 0;
 }
 
-void print_msgs(void)
+int main(int argc, char *argv[])
 {
-	uint32_t offset;
-	uint32_t type_len;
-	uint32_t msg_len;
-	bootloader_log_msg_t *msgs;
-
-	if (log == NULL)
-		return;
-
-	offset = sizeof(*log);
-
-	while (offset < log->next_off) {
-		msgs = (bootloader_log_msg_t *) ((uint8_t *) log + offset);
-
-		printf("%s:", msgs->type);
-		type_len = strlen(msgs->type) + 1;
-
-		printf("%s\n", msgs->type + type_len);
-		msg_len = strlen(msgs->type + type_len) + 1;
-
-		offset += sizeof(*msgs) + type_len + msg_len;
-	}
-}
-
-int main(void)
-{
-	print_regs();
+	print_regs(argc, argv);
 	read_file("log_file");
 	print_msgs(); 
 
