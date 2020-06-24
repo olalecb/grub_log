@@ -7,12 +7,15 @@
 #include <getopt.h>
 #include <stdbool.h>
 #include <sys/mman.h>
+#include <sys/time.h>
+#include <ctype.h>
 #include <errno.h>
 #include "sl-stat.h"
 
 static bootloader_log_t *log;
 
-void read_file(char *filename)
+/* Functions for printing bootloader_log */
+void read_log_file(char *filename)
 {
 	uint32_t log_fd;
 	uint32_t file_size;
@@ -32,7 +35,7 @@ void read_file(char *filename)
 	close(log_fd);
 }
 
-void print_msgs(void)
+void print_bootloader_log(void)
 {
 	uint32_t offset;
 	uint32_t type_len;
@@ -57,6 +60,7 @@ void print_msgs(void)
 	}
 }
 
+/* Functions for printing the registers/heap */
 static inline const char * bit_to_str(uint64_t b)
 {
 	return b ? "TRUE" : "FALSE";
@@ -634,44 +638,13 @@ void print_help(const char *usage_str, const char *option_string[])
 		printf("%s", option_string[i]);
 }
 
-static const char *short_option = "h";
-static struct option longopts[] = {
-	{"heap", 0, 0, 'p'},
-	{"help", 0, 0, 'h'},
-	{0, 0, 0, 0}
-};
-static const char *usage_string = "txt-stat [--heap] [-h]";
-static const char *option_strings[] = {
-	"--heap:\t\tprint out heap info.\n",
-	"-h, --help:\tprint out this help message.\n",
-	NULL
-};
-
-int print_regs(int argc, char *argv[])
+int print_regs(bool display_heap_optin)
 {
-	bool display_heap_optin = false;	
 	uint64_t heap = 0;
 	uint64_t heap_size = 0;
 	void *buf = NULL;
 	off_t seek_ret = -1;
 	size_t read_ret = 0;
-
-	int c;
-	while ((c = getopt_long(argc, (char **const)argv, short_option,
-		longopts, NULL)) != -1) {
-		switch (c) {
-		case 'h':
-			print_help(usage_string, option_strings);
-			return 0;
-
-		case 'p':
-			display_heap_optin = true;
-			break;
-
-		default:
-			return 1;
-		}
-	}
 
 	fd_mem = open("/dev/mem", O_RDONLY);
 	if (fd_mem == -1) {
@@ -772,11 +745,136 @@ try_display_log:
 	return 0;
 }
 
+/* Functions for printing kmsg */
+char *skip_to_char(char *buf_index, const char *buf_end, const char *end_chars)
+{
+	while (buf_index < buf_end) {
+		buf_index++;
+		if (*buf_index == '\0' || strchr(end_chars, *buf_index))
+			break;	
+	}
+	return buf_index;
+}
+
+char *parse_kmsg(char *buf, struct timeval *tv)
+{
+	char *buf_index = buf;
+	const char *buf_end;
+	char *msg;
+	char *time_str;
+	uint64_t time_uint;
+
+	buf_end = buf + strlen(buf) - 1;
+
+	while (buf_index < buf_end && isspace(*buf_index))
+		buf_index++;
+	
+	/* Skip facility */
+	buf_index = skip_to_char(buf_index, buf_end, ",");
+
+	/* Skip Sequence */
+	buf_index = skip_to_char(buf_index, buf_end, ",;");
+	buf_index++;
+
+	time_str = buf_index;
+	buf_index = skip_to_char(buf_index, buf_end, ",;");
+	*buf_index = '\0';
+
+	time_uint = strtoumax(time_str, NULL, 10);
+	tv->tv_sec = time_uint / 1000000;
+	tv->tv_usec = time_uint % 1000000;
+
+	buf_index = skip_to_char(buf_index, buf_end, ";");
+	buf_index++;
+
+	msg = buf_index;
+	buf_index = skip_to_char(buf_index, buf_end, "\n");
+	*buf_index = '\0';
+
+	return msg;
+}
+
+int is_slaunch(char *msg)
+{
+	const char *slaunch = "slaunch";
+
+	if (strncmp(msg, slaunch, 7) == 0)
+		return 1;
+	return 0;	
+}
+
+void print_kmsg(void) 
+{
+	uint32_t kmsg_fd;
+	ssize_t read_size;
+	struct timeval *tv;
+	char buf[BUFSIZ];	
+	char *msg;
+
+	kmsg_fd = open("/dev/kmsg", O_RDONLY | O_NONBLOCK);
+
+	if (kmsg_fd < 0)
+		return;
+
+	tv->tv_sec = 0;
+	tv->tv_usec = 0;
+	
+	do {
+		read_size = read(kmsg_fd, buf, BUFSIZ);
+
+		if (read_size > 0) {
+			msg = parse_kmsg(buf, tv);
+			if (is_slaunch(msg))
+				printf("[%5ld.%06ld] %s\n", tv->tv_sec, tv->tv_usec, msg);
+		}
+	} while (read_size > 0);
+
+	close(kmsg_fd);
+}
+
+static const char *short_option = "f:h";
+static struct option longopts[] = {
+	{"file", 1, 0, 'f'},
+	{"heap", 0, 0, 'p'},
+	{"help", 0, 0, 'h'},
+	{0, 0, 0, 0}
+};
+static const char *usage_string = "sl-stat [--heap] [-h|--help] [-f|--file]";
+static const char *option_strings[] = {
+	"-f, --file\tprint log from a file.\n",
+	"--heap:\t\tprint out heap info.\n",
+	"-h, --help:\tprint out this help message.\n",
+	NULL
+};
+
 int main(int argc, char *argv[])
 {
-	print_regs(argc, argv);
-	read_file("log_file");
-	print_msgs(); 
+	char *filename = "/sys/kernel/bootloader_log";	
+	bool display_heap_optin = false;
+	int c;
+	while ((c = getopt_long(argc, (char **const)argv, short_option,
+		longopts, NULL)) != -1) {
+		switch (c) {
+		case 'f':
+			filename = optarg;
+			break;
+		case 'h':
+			print_help(usage_string, option_strings);
+			return 0;
+
+		case 'p':
+			display_heap_optin = true;
+			break;
+
+		default:
+			return 1;
+		}
+	}
+
+	print_regs(display_heap_optin);
+	read_log_file(filename);
+	print_bootloader_log(); 
+	print_kmsg();
 
 	return 0;
 }
