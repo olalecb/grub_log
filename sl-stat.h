@@ -47,7 +47,7 @@ typedef struct PACKED {
 	/* char msg[] */
 } bootloader_log_msg_t;
 
-typedef struct PACKED{
+typedef struct PACKED {
 	uint32_t version;
 	uint32_t producer;
 	uint32_t size;
