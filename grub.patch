@@ -1,0 +1,302 @@
+diff --git a/grub-core/kern/main.c b/grub-core/kern/main.c
+index 9cad0c4..e942c40 100644
+--- a/grub-core/kern/main.c
++++ b/grub-core/kern/main.c
+@@ -299,6 +299,7 @@ grub_main (void)
+   grub_boot_time ("After reclaiming module space.");
+ 
+   grub_register_core_commands ();
++  grub_register_log_commands ();
+ 
+   grub_boot_time ("Before execution of embedded config.");
+ 
+diff --git a/grub-core/kern/misc.c b/grub-core/kern/misc.c
+index ce92ddd..4f27d5e 100644
+--- a/grub-core/kern/misc.c
++++ b/grub-core/kern/misc.c
+@@ -24,6 +24,10 @@
+ #include <grub/term.h>
+ #include <grub/env.h>
+ #include <grub/i18n.h>
++#include <grub/command.h>
++
++#define GRUB_LOG_NORMAL 0
++#define GRUB_LOG_DEBUG 1
+ 
+ union printf_arg
+ {
+@@ -45,6 +49,43 @@ struct printf_args
+   grub_size_t count;
+ };
+ 
++struct bootloader_log_msg
++{
++  grub_uint32_t level;
++  grub_uint32_t facility;
++  char type[];
++  /* char msg[]; */
++} GRUB_PACKED;
++typedef struct bootloader_log_msg bootloader_log_msg_t;
++
++struct bootloader_log
++{
++  grub_uint32_t version;
++  grub_uint32_t producer;
++  grub_uint32_t size;
++  grub_uint32_t next_off;
++  bootloader_log_msg_t msgs[];
++} GRUB_PACKED;
++typedef struct bootloader_log bootloader_log_t;
++
++static bootloader_log_t *grub_log;
++
++int
++grub_log_init (void);
++
++int
++grub_log_realloc (void);
++
++grub_int32_t
++grub_log_write_msg (char *msg, va_list prev_args, const char *fmt, ...);
++
++int
++grub_log_add_msg (grub_uint32_t level, const char *file, const int line,
++		  const char *fmt, va_list prev_args);
++
++void
++grub_log_print (void);
++
+ static void
+ parse_printf_args (const char *fmt0, struct printf_args *args,
+ 		   va_list args_in);
+@@ -107,12 +148,181 @@ grub_strcpy (char *dest, const char *src)
+ }
+ 
+ int
++grub_log_init (void)
++{
++  grub_log = grub_zalloc (4096);
++
++  if (grub_log == NULL)
++    return GRUB_ERR_OUT_OF_MEMORY;
++
++  grub_log->version = 1;
++  grub_log->producer = 1;
++  grub_log->size = 4096;
++  grub_log->next_off = sizeof (*grub_log);
++
++  return 0;
++}
++
++int
++grub_log_realloc (void)
++{
++  bootloader_log_t *realloc_log;
++  grub_uint32_t size;
++
++  size = grub_log->size + 4096;
++  realloc_log = grub_realloc (grub_log, size);
++
++  if (realloc_log == NULL)
++    return GRUB_ERR_OUT_OF_MEMORY;
++
++  grub_log = realloc_log;
++  grub_memset ((grub_uint8_t *) grub_log + grub_log->size, 0, 4096);
++  grub_log->size = size;
++
++  return 0;
++}
++
++grub_int32_t
++grub_log_write_msg (char *msg, va_list prev_args, const char *fmt, ...)
++{
++  va_list args;
++  grub_int32_t max_len;
++  grub_int32_t act_len;
++
++  do
++    {
++      if (prev_args == NULL)
++	va_start (args, fmt);
++      else
++ 	va_copy (args, prev_args);
++
++      max_len = grub_log->size - grub_log->next_off; 
++      act_len = grub_vsnprintf (msg, max_len, fmt, args);
++      va_end (args);
++
++      if (act_len >= max_len)
++	{
++	  if (grub_log_realloc () != GRUB_ERR_NONE)
++	    return -1;
++
++	  msg = (char *) ((grub_uint8_t *) grub_log + grub_log->next_off);
++	}
++    }
++  while (act_len >= max_len);
++
++  return act_len;
++}
++
++int
++grub_log_add_msg (grub_uint32_t level, const char *file, const int line,
++		  const char *fmt, va_list prev_args)
++{
++  bootloader_log_msg_t *msgs;
++  va_list args;
++  grub_int32_t act_len;
++  grub_uint32_t type_off;
++
++  if (grub_log == NULL)  
++    grub_log_init (); 
++
++  if (grub_log->next_off + sizeof (*msgs) >= grub_log->size)
++    grub_log_realloc ();
++
++  msgs = (bootloader_log_msg_t *) ((grub_uint8_t *) grub_log + grub_log->next_off);
++  msgs->level = level;
++  grub_log->next_off += sizeof (*msgs);
++
++  act_len = grub_log_write_msg (msgs->type, NULL, "%s", file);
++  if (act_len == -1)
++    return GRUB_ERR_OUT_OF_MEMORY;
++
++  grub_log->next_off += act_len + 1;
++  type_off = act_len + 1;
++
++  act_len = grub_log_write_msg (msgs->type + type_off, NULL, "%d: ", line);
++  if (act_len == -1)
++    return GRUB_ERR_OUT_OF_MEMORY;
++
++  grub_log->next_off += act_len;
++  type_off += act_len;
++
++  va_copy (args, prev_args);
++  act_len = grub_log_write_msg (msgs->type + type_off, args, fmt);
++  va_end (args);
++  if (act_len == -1)
++    return GRUB_ERR_OUT_OF_MEMORY;
++
++  grub_log->next_off += act_len + 1;
++
++  return 0;
++}
++
++static int grub_log_can_add = 1;
++
++void
++grub_log_print (void)
++{
++  grub_uint32_t offset;
++  grub_uint32_t type_len;
++  grub_uint32_t msg_len;
++  bootloader_log_msg_t *msgs;
++
++  if (grub_log == NULL)
++    return;
++
++  grub_log_can_add = 0;
++
++  grub_printf ("Version: %d\n", grub_log->version);
++  grub_printf ("Producer: %d\n", grub_log->producer);
++  grub_printf ("Size: %d\n", grub_log->size);
++  grub_printf ("Next_off: %d\n\n", grub_log->next_off);
++
++  offset = sizeof (*grub_log);
++
++  while (offset < grub_log->next_off)
++    {
++      msgs = (bootloader_log_msg_t *) ((grub_uint8_t *) grub_log + offset);
++
++      grub_printf ("Level: %d\n", msgs->level);
++      grub_printf ("Facility: %d\n", msgs->facility);
++      offset += sizeof (*msgs);
++
++      grub_printf ("Type: %s\n", msgs->type);
++      type_len = grub_strlen (msgs->type) + 1;
++
++      grub_printf ("Msg: %s\n\n", msgs->type + type_len);
++      msg_len = grub_strlen (msgs->type + type_len) + 1;
++      offset += type_len + msg_len;
++    }
++
++  grub_log_can_add = 1;
++}
++
++static grub_err_t
++grub_log_cmd_printlog (grub_command_t cmd __attribute__ ((unused)),
++		       int argc __attribute__ ((unused)),
++		       char *argv[] __attribute__ ((unused)))
++{
++  grub_log_print ();
++  return 0;
++}
++
++void
++grub_register_log_commands (void)
++{
++  grub_register_command ("printlog", grub_log_cmd_printlog,
++		         NULL, N_("Print grub log."));
++}
++
++int
+ grub_printf (const char *fmt, ...)
+ {
+   va_list ap;
+   int ret;
+ 
+   va_start (ap, fmt);
++  if (grub_log_can_add == 1)
++    grub_log_add_msg (GRUB_LOG_NORMAL, "", 0, fmt, ap);
+   ret = grub_vprintf (fmt, ap);
+   va_end (ap);
+ 
+@@ -126,6 +336,7 @@ grub_printf_ (const char *fmt, ...)
+   int ret;
+ 
+   va_start (ap, fmt);
++  grub_log_add_msg (GRUB_LOG_NORMAL, "", 0, fmt, ap);
+   ret = grub_vprintf (_(fmt), ap);
+   va_end (ap);
+ 
+@@ -142,14 +353,15 @@ grub_puts_ (const char *s)
+ int
+ grub_err_printf (const char *fmt, ...)
+ {
+-	va_list ap;
+-	int ret;
++  va_list ap;
++  int ret;
+ 
+-	va_start (ap, fmt);
+-	ret = grub_vprintf (fmt, ap);
+-	va_end (ap);
++  va_start (ap, fmt);
++  grub_log_add_msg (GRUB_LOG_NORMAL, "", 0, fmt, ap);
++  ret = grub_vprintf (fmt, ap);
++  va_end (ap);
+ 
+-	return ret;
++  return ret;
+ }
+ #endif
+ 
+@@ -183,6 +395,7 @@ grub_real_dprintf (const char *file, const int line, const char *condition,
+     {
+       grub_printf ("%s:%d: ", file, line);
+       va_start (args, fmt);
++      grub_log_add_msg (GRUB_LOG_DEBUG, condition, line, fmt, args);
+       grub_vprintf (fmt, args);
+       va_end (args);
+       grub_refresh ();
+diff --git a/include/grub/command.h b/include/grub/command.h
+index eee4e84..5b93886 100644
+--- a/include/grub/command.h
++++ b/include/grub/command.h
+@@ -126,4 +126,6 @@ grub_command_execute (const char *name, int argc, char **argv)
+ 
+ void grub_register_core_commands (void);
+ 
++void grub_register_log_commands (void);
++
+ #endif /* ! GRUB_COMMAND_HEADER */
