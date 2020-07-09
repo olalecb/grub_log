@@ -11,21 +11,22 @@ index 9cad0c4..e942c40 100644
    grub_boot_time ("Before execution of embedded config.");
  
 diff --git a/grub-core/kern/misc.c b/grub-core/kern/misc.c
-index ce92ddd..4f27d5e 100644
+index ce92ddd..2a725ed 100644
 --- a/grub-core/kern/misc.c
 +++ b/grub-core/kern/misc.c
-@@ -24,6 +24,10 @@
+@@ -24,6 +24,11 @@
  #include <grub/term.h>
  #include <grub/env.h>
  #include <grub/i18n.h>
 +#include <grub/command.h>
++#include <grub/relocator.h>
 +
 +#define GRUB_LOG_NORMAL 0
 +#define GRUB_LOG_DEBUG 1
  
  union printf_arg
  {
-@@ -45,6 +49,43 @@ struct printf_args
+@@ -45,6 +50,43 @@ struct printf_args
    grub_size_t count;
  };
  
@@ -69,7 +70,7 @@ index ce92ddd..4f27d5e 100644
  static void
  parse_printf_args (const char *fmt0, struct printf_args *args,
  		   va_list args_in);
-@@ -107,12 +148,181 @@ grub_strcpy (char *dest, const char *src)
+@@ -107,12 +149,204 @@ grub_strcpy (char *dest, const char *src)
  }
  
  int
@@ -182,6 +183,29 @@ index ce92ddd..4f27d5e 100644
 +  return 0;
 +}
 +
++grub_err_t
++grub_log_allocate (struct grub_relocator *relocator, grub_uint64_t *physical_addr,
++		   grub_uint32_t *size)
++{
++  grub_err_t err;
++  grub_relocator_chunk_t ch;
++  bootloader_log_t *virt_addr;
++
++  err = grub_relocator_alloc_chunk_align (relocator, &ch, 0, ~0, grub_log->size,
++					  4096, GRUB_RELOCATOR_PREFERENCE_HIGH, 1);
++
++  if (err != GRUB_ERR_NONE)
++    return err;
++
++  virt_addr = get_virtual_current_address (ch);
++  grub_memcpy (virt_addr, grub_log, grub_log->size);
++
++  *physical_addr = get_physical_target_address (ch);
++  *size = grub_log->size;
++
++  return GRUB_ERR_NONE;
++}
++
 +static int grub_log_can_add = 1;
 +
 +void
@@ -251,7 +275,7 @@ index ce92ddd..4f27d5e 100644
    ret = grub_vprintf (fmt, ap);
    va_end (ap);
  
-@@ -126,6 +336,7 @@ grub_printf_ (const char *fmt, ...)
+@@ -126,6 +360,7 @@ grub_printf_ (const char *fmt, ...)
    int ret;
  
    va_start (ap, fmt);
@@ -259,7 +283,7 @@ index ce92ddd..4f27d5e 100644
    ret = grub_vprintf (_(fmt), ap);
    va_end (ap);
  
-@@ -142,14 +353,15 @@ grub_puts_ (const char *s)
+@@ -142,14 +377,15 @@ grub_puts_ (const char *s)
  int
  grub_err_printf (const char *fmt, ...)
  {
@@ -281,7 +305,7 @@ index ce92ddd..4f27d5e 100644
  }
  #endif
  
-@@ -183,6 +395,7 @@ grub_real_dprintf (const char *file, const int line, const char *condition,
+@@ -183,6 +419,7 @@ grub_real_dprintf (const char *file, const int line, const char *condition,
      {
        grub_printf ("%s:%d: ", file, line);
        va_start (args, fmt);
@@ -289,6 +313,19 @@ index ce92ddd..4f27d5e 100644
        grub_vprintf (fmt, args);
        va_end (args);
        grub_refresh ();
+diff --git a/grub-core/loader/i386/linux.c b/grub-core/loader/i386/linux.c
+index ac1fae7..e886717 100644
+--- a/grub-core/loader/i386/linux.c
++++ b/grub-core/loader/i386/linux.c
+@@ -513,6 +513,8 @@ grub_linux_boot (void)
+   linux_params.acpi_rsdp_addr = grub_le_to_cpu64 (grub_rsdp_addr);
+ #endif
+ 
++  grub_log_allocate (relocater, &linux_params.log_buffer_addr,
++		     &linux_params.log_buffer_size);
+   mmap_size = find_mmap_size ();
+   /* Make sure that each size is aligned to a page boundary.  */
+   cl_offset = ALIGN_UP (mmap_size + sizeof (linux_params), 4096);
 diff --git a/include/grub/command.h b/include/grub/command.h
 index eee4e84..5b93886 100644
 --- a/include/grub/command.h
@@ -300,3 +337,44 @@ index eee4e84..5b93886 100644
 +void grub_register_log_commands (void);
 +
  #endif /* ! GRUB_COMMAND_HEADER */
+diff --git a/include/grub/i386/linux.h b/include/grub/i386/linux.h
+index ce30e7f..2a652ab 100644
+--- a/include/grub/i386/linux.h
++++ b/include/grub/i386/linux.h
+@@ -228,8 +228,13 @@ struct linux_kernel_params
+   grub_uint32_t ofw_num_items;		/* b4 */
+   grub_uint32_t ofw_cif_handler;	/* b8 */
+   grub_uint32_t ofw_idt;		/* bc */
++  grub_uint32_t ext_ramdisk_image;	/* c0 */
++  grub_uint32_t ext_ramdisk_size;	/* c4 */
++  grub_uint32_t ext_cmd_line_ptr;	/* c8 */
++  grub_uint64_t log_buffer_addr;	/* cc */
++  grub_uint32_t log_buffer_size;	/* d4 */
+ 
+-  grub_uint8_t padding7[0x1b8 - 0xc0];
++  grub_uint8_t padding7[0x1b8 - 0xd8];
+ 
+   union
+     {
+diff --git a/include/grub/misc.h b/include/grub/misc.h
+index b7ca6dd..a75eb5e 100644
+--- a/include/grub/misc.h
++++ b/include/grub/misc.h
+@@ -26,6 +26,7 @@
+ #include <grub/err.h>
+ #include <grub/i18n.h>
+ #include <grub/compiler.h>
++#include <grub/relocator.h>
+ 
+ #define ALIGN_UP(addr, align) \
+ 	((addr + (typeof (addr)) align - 1) & ~((typeof (addr)) align - 1))
+@@ -304,6 +305,9 @@ char *EXPORT_FUNC(grub_strdup) (const char *s) WARN_UNUSED_RESULT;
+ char *EXPORT_FUNC(grub_strndup) (const char *s, grub_size_t n) WARN_UNUSED_RESULT;
+ void *EXPORT_FUNC(grub_memset) (void *s, int c, grub_size_t n);
+ grub_size_t EXPORT_FUNC(grub_strlen) (const char *s) WARN_UNUSED_RESULT;
++grub_err_t EXPORT_FUNC(grub_log_allocate) (struct grub_relocator *relocator,
++					   grub_uint64_t *physical_addr,
++					   grub_uint32_t *size);
+ int EXPORT_FUNC(grub_printf) (const char *fmt, ...) __attribute__ ((format (GNU_PRINTF, 1, 2)));
+ int EXPORT_FUNC(grub_printf_) (const char *fmt, ...) __attribute__ ((format (GNU_PRINTF, 1, 2)));
+ 
