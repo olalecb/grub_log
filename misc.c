@@ -225,10 +225,27 @@ grub_log_add_msg (grub_uint32_t level, const char *file, const int line,
   va_list args;
   grub_int32_t act_len;
   grub_uint32_t type_off;
+  const char *grub_log_env;
+  const char *grub_log_debug;
+  const char *grub_log_debug_fl;
+
+  grub_log_env = grub_env_get ("grub_log");
+  grub_log_debug = grub_env_get ("grub_log_debug");
+  grub_log_debug_fl = grub_env_get ("grub_log_debug_fl");
+
+  if (!grub_log_env)
+    return 0;
+
+  if (level == GRUB_LOG_DEBUG && (!grub_strword (grub_log_env, "2") || !grub_log_debug ||
+      !(grub_strword (grub_log_debug, "all") || grub_strword (grub_log_debug, file))))
+    {
+      grub_printf("Couldn't add! message\n");
+      return 0;
+    }
 
   if (grub_log == NULL)  
-    grub_log_init (); 
-
+    grub_log_init ();
+ 
   if (grub_log->next_off + sizeof (*msgs) >= grub_log->size)
     grub_log_realloc ();
 
@@ -236,19 +253,27 @@ grub_log_add_msg (grub_uint32_t level, const char *file, const int line,
   msgs->level = level;
   grub_log->next_off += sizeof (*msgs);
 
-  act_len = grub_log_write_msg (msgs->type, NULL, "%s", file);
-  if (act_len == -1)
-    return GRUB_ERR_OUT_OF_MEMORY;
+  if (grub_log_debug_fl && level == GRUB_LOG_DEBUG)
+    {
+      act_len = grub_log_write_msg (msgs->type, NULL, "%s", file);
+      if (act_len == -1)
+        return GRUB_ERR_OUT_OF_MEMORY;
 
-  grub_log->next_off += act_len + 1;
-  type_off = act_len + 1;
+      grub_log->next_off += act_len + 1;
+      type_off = act_len + 1;
 
-  act_len = grub_log_write_msg (msgs->type + type_off, NULL, "%d: ", line);
-  if (act_len == -1)
-    return GRUB_ERR_OUT_OF_MEMORY;
+      act_len = grub_log_write_msg (msgs->type + type_off, NULL, ":%d: ", line);
+      if (act_len == -1)
+        return GRUB_ERR_OUT_OF_MEMORY;
 
-  grub_log->next_off += act_len;
-  type_off += act_len;
+      grub_log->next_off += act_len;
+      type_off += act_len;
+    }
+  else
+    {
+      grub_log->next_off += 1;
+      type_off = 1;
+    }
 
   va_copy (args, prev_args);
   act_len = grub_log_write_msg (msgs->type + type_off, args, fmt);
@@ -267,29 +292,6 @@ grub_log_copy (void *dest, grub_uint32_t size)
   return grub_memcpy (dest, grub_log, size);
 }
 
-/*grub_err_t
-grub_log_allocate (struct grub_relocator *relocator, grub_uint64_t *physical_addr,
-		   grub_uint32_t *size)
-{
-  grub_err_t err;
-  grub_relocator_chunk_t ch;
-  bootloader_log_t *virt_addr;
-
-  err = grub_relocator_alloc_chunk_align (relocator, &ch, 0, ~0, grub_log->size,
-					  4096, GRUB_RELOCATOR_PREFERENCE_HIGH, 1);
-
-  if (err != GRUB_ERR_NONE)
-    return err;
-
-  virt_addr = get_virtual_current_address (ch);
-  grub_memcpy (virt_addr, grub_log, grub_log->size);
-
-  *physical_addr = get_physical_target_address (ch);
-  *size = grub_log->size;
-
-  return GRUB_ERR_NONE;
-}
-*/
 static int grub_log_can_add = 1;
 
 void
