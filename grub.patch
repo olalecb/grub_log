@@ -11,7 +11,7 @@ index 9cad0c4..e942c40 100644
    grub_boot_time ("Before execution of embedded config.");
  
 diff --git a/grub-core/kern/misc.c b/grub-core/kern/misc.c
-index ce92ddd..18b3076 100644
+index ce92ddd..06d5742 100644
 --- a/grub-core/kern/misc.c
 +++ b/grub-core/kern/misc.c
 @@ -24,6 +24,12 @@
@@ -27,35 +27,20 @@ index ce92ddd..18b3076 100644
  
  union printf_arg
  {
-@@ -45,6 +51,24 @@ struct printf_args
+@@ -45,6 +51,8 @@ struct printf_args
    grub_size_t count;
  };
  
 +bootloader_log_t *grub_log;
 +
-+int
-+grub_log_init (void);
-+
-+int
-+grub_log_realloc (grub_uint32_t max_len);
-+
-+int
-+grub_log_vadd_str (char *pos, const char *fmt, va_list ap);
-+
-+int
-+grub_log_add_str (char *pos, const char *fmt, ...);
-+
-+void
-+grub_log_add_msg (grub_uint32_t level, const char *file, const int line,
-+		  const char *fmt, va_list prev_args);
-+
  static void
  parse_printf_args (const char *fmt0, struct printf_args *args,
  		   va_list args_in);
-@@ -107,12 +131,214 @@ grub_strcpy (char *dest, const char *src)
+@@ -106,6 +114,213 @@ grub_strcpy (char *dest, const char *src)
+   return dest;
  }
  
- int
++static int
 +grub_log_init (void)
 +{
 +  grub_log = grub_zalloc (BL_SIZE_INIT);
@@ -71,7 +56,9 @@ index ce92ddd..18b3076 100644
 +  return 0;
 +}
 +
-+int
++static int grub_log_enable = 1;
++
++static int
 +grub_log_realloc (grub_uint32_t max_len)
 +{
 +  bootloader_log_t *realloc_log;
@@ -90,8 +77,8 @@ index ce92ddd..18b3076 100644
 +  return 0;
 +}
 +
-+int
-+grub_log_vadd_str (char *pos, const char *fmt, va_list ap)
++static int
++grub_log_vadd_str (char *pos, grub_uint32_t offset, const char *fmt, va_list ap)
 +{
 +  va_list args;
 +  grub_int32_t max_len;
@@ -100,7 +87,7 @@ index ce92ddd..18b3076 100644
 +  do
 +    {
 +      va_copy (args, ap);
-+      max_len = grub_log->size - (grub_log->next_off + 2 * sizeof (grub_uint32_t)); 
++      max_len = grub_log->size - offset; 
 +      act_len = grub_vsnprintf (pos, max_len, fmt, args);
 +      act_len += 1;
 +      va_end (args);
@@ -110,7 +97,7 @@ index ce92ddd..18b3076 100644
 +	  if (grub_log_realloc (max_len) != GRUB_ERR_NONE)
 +	    return -1;
 +
-+	  pos = (char *) ((grub_uint8_t *) grub_log + grub_log->next_off);
++	  pos = (char *) ((grub_uint8_t *) grub_log + offset);
 +	}
 +    }
 +  while (act_len >= max_len);
@@ -118,20 +105,20 @@ index ce92ddd..18b3076 100644
 +  return act_len;
 +}
 +
-+int
-+grub_log_add_str (char *pos, const char *fmt, ...)
++static int
++grub_log_add_str (char *pos, grub_uint32_t offset, const char *fmt, ...)
 +{  
 +  va_list ap;
 +  int ret;
 +
 +  va_start (ap, fmt);
-+  ret = grub_log_vadd_str (pos, fmt, ap);
++  ret = grub_log_vadd_str (pos, offset, fmt, ap);
 +  va_end (ap);
 +
 +  return ret;
 +}
 +
-+void
++static void
 +grub_log_add_msg (grub_uint32_t level, const char *file, const int line,
 +		  const char *fmt, va_list prev_args)
 +{
@@ -139,7 +126,9 @@ index ce92ddd..18b3076 100644
 +  va_list args;
 +  grub_int32_t act_len;
 +  grub_uint32_t type_off;
++  grub_uint32_t offset;
 +  grub_uint64_t grub_log_num;
++  grub_uint64_t fl_num;
 +  const char *grub_log_env;
 +  const char *grub_log_debug;
 +  const char *grub_log_debug_fl;
@@ -152,7 +141,7 @@ index ce92ddd..18b3076 100644
 +  if (level == GRUB_LOG_DEBUG)
 +    {
 +      grub_log_debug = grub_env_get ("grub_log_debug");
-+      grub_log_num = grub_strtoul (grub_log_debug, NULL, 10);
++      grub_log_num = grub_strtoul (grub_log_env, NULL, 10);
 +
 +	if (grub_log_num != GRUB_LOG_DEBUG || !grub_log_debug || 
 +	    (!grub_strword (grub_log_debug, "all") &&
@@ -161,46 +150,49 @@ index ce92ddd..18b3076 100644
 +    }
 +
 +  grub_log_debug_fl = grub_env_get ("grub_log_debug_fl");
++  if (!grub_log_debug_fl)
++    fl_num = 0;
++  else
++    fl_num = grub_strtoul (grub_log_debug_fl, NULL, 10);
 +
 +  if (grub_log == NULL)  
 +    grub_log_init ();
 +
 +  msg = (bootloader_log_msg_t *) ((grub_uint8_t *) grub_log + grub_log->next_off);
++  offset = grub_log->next_off + sizeof (*msg);
 +
-+  if (grub_log_debug_fl && level == GRUB_LOG_DEBUG)
++  if (fl_num == 1 && level == GRUB_LOG_DEBUG)
 +    {
-+      act_len = grub_log_add_str (msg->type, "%s", file);
++      act_len = grub_log_add_str (msg->type, offset, "%s", file);
 +      if (act_len == -1)
 +	return;
 +      type_off = act_len;
 +
-+      act_len = grub_log_add_str (msg->type + type_off, ":%d: ", line);
++      act_len = grub_log_add_str (msg->type + type_off, offset + type_off, ":%d: ", line);
 +      if (act_len == -1)
 +	return;
 +      type_off += act_len - 1;
 +    }
 +  else
 +    {
-+      act_len = grub_log_add_str (msg->type, "");
++      act_len = grub_log_add_str (msg->type, offset, "\0");
 +      if (act_len == -1)
 +	return;
 +      type_off = act_len;
 +    }
 +
 +  va_copy (args, prev_args);
-+  act_len = grub_log_vadd_str (msg->type + type_off, fmt, args);
++  act_len = grub_log_vadd_str (msg->type + type_off, offset + type_off, fmt, args);
 +  va_end (args);
 +  if (act_len == -1)
 +    return;
 +
 +  msg->level = level;
 +  msg->facility = 0;
-+  grub_log->next_off += type_off + act_len;
++  grub_log->next_off = offset + type_off + act_len;
 +
 +  return;
 +}
-+
-+static int grub_log_enable = 1;
 +
 +static void
 +grub_log_print (void *log)
@@ -255,10 +247,10 @@ index ce92ddd..18b3076 100644
 +		         NULL, N_("Print grub log."));
 +}
 +
-+int
+ int
  grub_printf (const char *fmt, ...)
  {
-   va_list ap;
+@@ -113,6 +328,8 @@ grub_printf (const char *fmt, ...)
    int ret;
  
    va_start (ap, fmt);
@@ -267,7 +259,7 @@ index ce92ddd..18b3076 100644
    ret = grub_vprintf (fmt, ap);
    va_end (ap);
  
-@@ -126,6 +352,7 @@ grub_printf_ (const char *fmt, ...)
+@@ -126,6 +343,7 @@ grub_printf_ (const char *fmt, ...)
    int ret;
  
    va_start (ap, fmt);
@@ -275,7 +267,7 @@ index ce92ddd..18b3076 100644
    ret = grub_vprintf (_(fmt), ap);
    va_end (ap);
  
-@@ -142,14 +369,15 @@ grub_puts_ (const char *s)
+@@ -142,14 +360,15 @@ grub_puts_ (const char *s)
  int
  grub_err_printf (const char *fmt, ...)
  {
@@ -297,7 +289,7 @@ index ce92ddd..18b3076 100644
  }
  #endif
  
-@@ -181,8 +409,11 @@ grub_real_dprintf (const char *file, const int line, const char *condition,
+@@ -181,8 +400,11 @@ grub_real_dprintf (const char *file, const int line, const char *condition,
  
    if (grub_debug_enabled (condition))
      {
