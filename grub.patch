@@ -11,7 +11,7 @@ index 9cad0c4..e942c40 100644
    grub_boot_time ("Before execution of embedded config.");
  
 diff --git a/grub-core/kern/misc.c b/grub-core/kern/misc.c
-index ce92ddd..06d5742 100644
+index ce92ddd..81a8da5 100644
 --- a/grub-core/kern/misc.c
 +++ b/grub-core/kern/misc.c
 @@ -24,6 +24,12 @@
@@ -55,8 +55,6 @@ index ce92ddd..06d5742 100644
 +
 +  return 0;
 +}
-+
-+static int grub_log_enable = 1;
 +
 +static int
 +grub_log_realloc (grub_uint32_t max_len)
@@ -193,6 +191,8 @@ index ce92ddd..06d5742 100644
 +
 +  return;
 +}
++
++static int grub_log_enable = 1;
 +
 +static void
 +grub_log_print (void *log)
