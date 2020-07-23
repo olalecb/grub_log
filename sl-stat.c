@@ -18,7 +18,10 @@ static bootloader_log_t *log;
 static void read_log_file(char *filename)
 {
 	uint32_t log_fd;
-	uint32_t file_size;	
+	uint32_t file_size;
+	ssize_t bytes_read;
+	ssize_t offset;
+	bootloader_log_t *log_offset;
 
 	log_fd = open(filename, O_RDONLY);
 
@@ -32,12 +35,19 @@ static void read_log_file(char *filename)
 
 	log = malloc(file_size);
 
-	read(log_fd, log, file_size);
-		
-	if (errno != 0) {
-		fprintf(stderr, "Error reading %s: %s\n", filename, strerror(errno));
-		exit(EXIT_FAILURE);
-	}
+	offset = 0;
+
+	do {
+		log_offset = (bootloader_log_t *)((uint8_t *)log + offset);
+		bytes_read = read(log_fd, log_offset, file_size);
+		printf("bytes_read = %d\n", bytes_read);
+		if (errno != 0) {
+			fprintf(stderr, "Error reading %s: %s\n", filename, strerror(errno));
+			exit(EXIT_FAILURE);
+		}
+
+		offset += bytes_read;
+	} while (bytes_read != 0);
 
 	close(log_fd);
 	
@@ -62,14 +72,15 @@ static void print_bootloader_log(void)
 	while (offset < log->next_off) {
 		msgs = (bootloader_log_msg_t *) ((uint8_t *) log + offset);
 
-		printf("%s:", msgs->type);
+		printf("%s", msgs->type);
 		type_len = strlen(msgs->type) + 1;
 
-		printf("%s\n", msgs->type + type_len);
+		printf("%s", msgs->type + type_len);
 		msg_len = strlen(msgs->type + type_len) + 1;
 
 		offset += sizeof(*msgs) + type_len + msg_len;
 	}
+	printf("\n");
 }
 
 /* Functions for printing the registers/heap */
@@ -834,7 +845,7 @@ static const char *option_strings[] = {
 
 int main(int argc, char *argv[])
 {
-	char *filename = "/sys/kernel/bootloader_log";
+	char *filename = "/sys/kernel/boot_params/bootloader_log";
 	bool display_heap_optin = false;
 	int c;
 	while ((c = getopt_long(argc, (char **const)argv, short_option,
